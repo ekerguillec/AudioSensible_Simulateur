@@ -1,0 +1,123 @@
+name: Build and Release AppImage
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  build-appimage:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract version
+        id: version
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Setup .NET 9
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Publish self-contained
+        run: |
+          dotnet publish AudioSensible.csproj \
+            -r linux-x64 \
+            --self-contained true \
+            -p:PublishSingleFile=true \
+            -p:StripSymbols=true \
+            -c Release \
+            -o publish/
+
+      - name: Install libfuse2 (requis par appimagetool)
+        run: sudo apt-get install -y libfuse2
+
+      - name: Download appimagetool
+        run: |
+          wget -q "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage" \
+            -O /usr/local/bin/appimagetool
+          chmod +x /usr/local/bin/appimagetool
+
+      - name: Assemble AppDir
+        run: |
+          mkdir -p AppDir/usr/bin
+          cp publish/HearingLossSimulator AppDir/usr/bin/HearingLossSimulator
+          chmod +x AppDir/usr/bin/HearingLossSimulator
+          cp packaging/AppDir/AppRun AppDir/AppRun
+          chmod +x AppDir/AppRun
+          cp packaging/AppDir/AudioSensible.desktop AppDir/AudioSensible.desktop
+          if [ -s packaging/AppDir/AudioSensible.png ]; then
+            cp packaging/AppDir/AudioSensible.png AppDir/AudioSensible.png
+          else
+            convert -size 256x256 xc:'#1a1a2e' -fill white -font DejaVu-Sans-Bold \
+              -pointsize 48 -gravity center -annotate 0 'AS' AppDir/AudioSensible.png
+          fi
+          ln -sf AudioSensible.png AppDir/.DirIcon
+
+      - name: Build AppImage
+        env:
+          ARCH: x86_64
+        run: |
+          NAME="AudioSensible-${{ steps.version.outputs.version }}-x86_64.AppImage"
+          appimagetool AppDir "${NAME}" || {
+            appimagetool --appimage-extract
+            ./squashfs-root/AppRun AppDir "${NAME}"
+          }
+          echo "APPIMAGE_NAME=${NAME}" >> "$GITHUB_ENV"
+
+      - name: Build tar.gz fallback
+        run: |
+          TAR="AudioSensible-${{ steps.version.outputs.version }}-linux-x64.tar.gz"
+          tar -czf "${TAR}" -C publish HearingLossSimulator
+          echo "TARBALL=${TAR}" >> "$GITHUB_ENV"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: "AudioSensible ${{ steps.version.outputs.version }}"
+          body: |
+            ## AudioSensible ${{ steps.version.outputs.version }}
+
+            Simulateur de surdité en temps réel pour Linux.
+
+            ### Lancement rapide (AppImage)
+            ```bash
+            chmod +x AudioSensible-${{ steps.version.outputs.version }}-x86_64.AppImage
+            ./AudioSensible-${{ steps.version.outputs.version }}-x86_64.AppImage
+            ```
+            Ou **double-clic** dans votre gestionnaire de fichiers.
+
+            ### Alternative (tar.gz, si pas de FUSE)
+            ```bash
+            tar -xzf AudioSensible-${{ steps.version.outputs.version }}-linux-x64.tar.gz
+            ./HearingLossSimulator
+            ```
+
+            ### Dépendances système requises
+            | Distribution | Commande |
+            |---|---|
+            | Ubuntu/Debian | `sudo apt install libasound2 libopenal1` |
+            | Fedora/RHEL | `sudo dnf install alsa-lib openal-soft` |
+            | Arch Linux | `sudo pacman -S alsa-lib openal` |
+            | openSUSE | `sudo zypper install alsa openal-soft` |
+
+            ### Compatibilité
+            - Architecture : x86_64
+            - glibc ≥ 2.35 (Ubuntu 22.04+, Fedora 36+, Debian 12+, Arch Linux)
+            - .NET runtime : **inclus** (pas besoin d'installer dotnet)
+          files: |
+            ${{ env.APPIMAGE_NAME }}
+            ${{ env.TARBALL }}

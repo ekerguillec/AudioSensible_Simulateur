@@ -1,0 +1,30 @@
+#!/bin/bash
+# Lance HearingLossSimulator dans un terminal si l'on est hors d'un TTY
+# (double-clic depuis un gestionnaire de fichiers).
+BINARY="$APPDIR/usr/bin/HearingLossSimulator"
+
+launch_in_terminal() {
+    local cmd="$1"
+    local pause="echo; read -rp 'Appuyez sur Entrée pour fermer...' _"
+
+    command -v gnome-terminal &>/dev/null && exec gnome-terminal -- bash -c "${cmd}; ${pause}"
+    command -v konsole        &>/dev/null && exec konsole -e bash -c "${cmd}; ${pause}"
+    command -v xfce4-terminal &>/dev/null && exec xfce4-terminal -e "bash -c '${cmd}; ${pause}'"
+    command -v mate-terminal  &>/dev/null && exec mate-terminal  -e "bash -c '${cmd}; ${pause}'"
+    command -v lxterminal     &>/dev/null && exec lxterminal     -e "bash -c '${cmd}; ${pause}'"
+    command -v kitty          &>/dev/null && exec kitty bash -c "${cmd}; ${pause}"
+    command -v alacritty      &>/dev/null && exec alacritty -e bash -c "${cmd}; ${pause}"
+    command -v wezterm        &>/dev/null && exec wezterm start bash -c "${cmd}; ${pause}"
+    command -v foot           &>/dev/null && exec foot bash -c "${cmd}; ${pause}"
+    command -v tilix          &>/dev/null && exec tilix -- bash -c "${cmd}; ${pause}"
+    command -v xterm          &>/dev/null && exec xterm -e "bash -c '${cmd}; ${pause}'"
+
+    echo "Aucun émulateur de terminal trouvé, lancement direct." >&2
+    exec "$BINARY" "$@"
+}
+
+if [ -t 1 ]; then
+    exec "$BINARY" "$@"
+else
+    launch_in_terminal "\"$BINARY\" $*"
+fi

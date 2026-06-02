@@ -1,0 +1,12 @@
+[Desktop Entry]
+Name=AudioSensible
+GenericName=Hearing Loss Simulator
+GenericName[fr]=Simulateur de surdité
+Comment=Simulate various levels of hearing loss in real-time via ALSA
+Comment[fr]=Simule différents niveaux de perte auditive en temps réel via ALSA
+Exec=AppRun
+Icon=AudioSensible
+Terminal=false
+Type=Application
+Categories=AudioVideo;Audio;
+Keywords=audio;alsa;hearing;audiologie;surdite;simulation;
