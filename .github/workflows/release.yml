@@ -1,4 +1,4 @@
-name: Build and Release AppImage
+name: Build and Release
 
 on:
   push:
@@ -6,42 +6,33 @@ on:
       - 'v*.*.*'
 
 jobs:
-  build-appimage:
+  # ─── Linux : AppImage + tar.gz ───────────────────────────────────────────────
+  build-linux:
     runs-on: ubuntu-22.04
-    permissions:
-      contents: write
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       - name: Extract version
-        id: version
+        id: ver
         run: |
-          TAG="${GITHUB_REF_NAME}"
-          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
-      - name: Setup .NET 9
-        uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '9.0.x'
 
-      - name: Publish self-contained
+      - name: Publish linux-x64
         run: |
           dotnet publish AudioSensible.csproj \
-            -r linux-x64 \
-            --self-contained true \
-            -p:PublishSingleFile=true \
-            -p:StripSymbols=true \
-            -c Release \
-            -o publish/
+            -r linux-x64 --self-contained true \
+            -p:PublishSingleFile=true -p:StripSymbols=true \
+            -c Release -o publish/
 
-      - name: Install libfuse2 (requis par appimagetool)
+      - name: Install libfuse2
         run: sudo apt-get install -y libfuse2
 
       - name: Download appimagetool
@@ -70,54 +61,156 @@ jobs:
         env:
           ARCH: x86_64
         run: |
-          NAME="AudioSensible-${{ steps.version.outputs.version }}-x86_64.AppImage"
+          NAME="AudioSensible-${{ steps.ver.outputs.version }}-x86_64.AppImage"
           appimagetool AppDir "${NAME}" || {
             appimagetool --appimage-extract
             ./squashfs-root/AppRun AppDir "${NAME}"
           }
-          echo "APPIMAGE_NAME=${NAME}" >> "$GITHUB_ENV"
 
-      - name: Build tar.gz fallback
+      - name: Build tar.gz
         run: |
-          TAR="AudioSensible-${{ steps.version.outputs.version }}-linux-x64.tar.gz"
-          tar -czf "${TAR}" -C publish HearingLossSimulator
-          echo "TARBALL=${TAR}" >> "$GITHUB_ENV"
+          tar -czf "AudioSensible-${{ steps.ver.outputs.version }}-linux-x64.tar.gz" \
+            -C publish HearingLossSimulator
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-build
+          path: |
+            AudioSensible-${{ steps.ver.outputs.version }}-x86_64.AppImage
+            AudioSensible-${{ steps.ver.outputs.version }}-linux-x64.tar.gz
+
+  # ─── Windows : zip avec .exe ──────────────────────────────────────────────────
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version
+        id: ver
+        shell: pwsh
+        run: |
+          $v = "$env:GITHUB_REF_NAME" -replace '^v',''
+          echo "version=$v" >> $env:GITHUB_OUTPUT
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Publish win-x64
+        run: |
+          dotnet publish AudioSensible.csproj `
+            -r win-x64 --self-contained true `
+            -p:PublishSingleFile=true `
+            -c Release -o publish\
+        shell: pwsh
+
+      - name: Package zip
+        shell: pwsh
+        run: |
+          $name = "AudioSensible-${{ steps.ver.outputs.version }}-win-x64.zip"
+          Compress-Archive -Path publish\HearingLossSimulator.exe -DestinationPath $name
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-build
+          path: AudioSensible-${{ steps.ver.outputs.version }}-win-x64.zip
+
+  # ─── macOS : x64 (Intel) + arm64 (Apple Silicon) ────────────────────────────
+  build-macos:
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        arch: [x64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version
+        id: ver
+        run: |
+          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Publish osx-${{ matrix.arch }}
+        run: |
+          dotnet publish AudioSensible.csproj \
+            -r osx-${{ matrix.arch }} --self-contained true \
+            -p:PublishSingleFile=true \
+            -c Release -o publish/
+
+      - name: Package tar.gz
+        run: |
+          tar -czf "AudioSensible-${{ steps.ver.outputs.version }}-osx-${{ matrix.arch }}.tar.gz" \
+            -C publish HearingLossSimulator
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.arch }}-build
+          path: AudioSensible-${{ steps.ver.outputs.version }}-osx-${{ matrix.arch }}.tar.gz
+
+  # ─── Release GitHub : agrège tous les artefacts ──────────────────────────────
+  release:
+    needs: [build-linux, build-windows, build-macos]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - name: Extract version
+        id: ver
+        run: |
+          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+          merge-multiple: true
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.version.outputs.tag }}
-          name: "AudioSensible ${{ steps.version.outputs.version }}"
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: "AudioSensible ${{ steps.ver.outputs.version }}"
           body: |
-            ## AudioSensible ${{ steps.version.outputs.version }}
+            ## AudioSensible ${{ steps.ver.outputs.version }}
 
-            Simulateur de surdité en temps réel pour Linux.
+            Simulateur de perte auditive en temps réel.
 
-            ### Lancement rapide (AppImage)
+            ---
+
+            ### 🐧 Linux
             ```bash
-            chmod +x AudioSensible-${{ steps.version.outputs.version }}-x86_64.AppImage
-            ./AudioSensible-${{ steps.version.outputs.version }}-x86_64.AppImage
+            chmod +x AudioSensible-${{ steps.ver.outputs.version }}-x86_64.AppImage
+            ./AudioSensible-${{ steps.ver.outputs.version }}-x86_64.AppImage
             ```
-            Ou **double-clic** dans votre gestionnaire de fichiers.
-
-            ### Alternative (tar.gz, si pas de FUSE)
+            Ou avec le tar.gz :
             ```bash
-            tar -xzf AudioSensible-${{ steps.version.outputs.version }}-linux-x64.tar.gz
+            tar -xzf AudioSensible-${{ steps.ver.outputs.version }}-linux-x64.tar.gz
             ./HearingLossSimulator
             ```
+            > Dépendances requises : `libasound2` (ALSA) — généralement déjà installé.
 
-            ### Dépendances système requises
-            | Distribution | Commande |
-            |---|---|
-            | Ubuntu/Debian | `sudo apt install libasound2 libopenal1` |
-            | Fedora/RHEL | `sudo dnf install alsa-lib openal-soft` |
-            | Arch Linux | `sudo pacman -S alsa-lib openal` |
-            | openSUSE | `sudo zypper install alsa openal-soft` |
+            ---
 
-            ### Compatibilité
-            - Architecture : x86_64
-            - glibc ≥ 2.35 (Ubuntu 22.04+, Fedora 36+, Debian 12+, Arch Linux)
-            - .NET runtime : **inclus** (pas besoin d'installer dotnet)
-          files: |
-            ${{ env.APPIMAGE_NAME }}
-            ${{ env.TARBALL }}
+            ### 🍎 macOS
+            Télécharger `osx-arm64` (Apple Silicon M1/M2/M3) ou `osx-x64` (Intel) :
+            ```bash
+            tar -xzf AudioSensible-${{ steps.ver.outputs.version }}-osx-arm64.tar.gz
+            ./HearingLossSimulator
+            ```
+            > Si macOS bloque le lancement (Gatekeeper) :
+            > `xattr -d com.apple.quarantine ./HearingLossSimulator`
+
+            ---
+
+            ### 🪟 Windows
+            Extraire le `.zip` et lancer `HearingLossSimulator.exe` dans un terminal :
+            ```
+            HearingLossSimulator.exe
+            ```
+            > Aucune dépendance requise — tout est inclus.
+          files: artifacts/**
